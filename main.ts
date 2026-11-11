@@ -21,8 +21,8 @@ const FLOOR = 1e-4;
 
 // Model settings (picked by the backtest, see README).
 const DEFAULTS = {
-  sigRank: 0.5, // kernel width on ln(rank)
-  sigMom: 0.6, // kernel width on momentum (ln of rank 12-36h earlier over rank now)
+  sigRank: 0.7, // kernel width on ln(rank)
+  sigMom: 0.4, // kernel width on momentum (ln of rank 12-36h earlier over rank now)
   sigAge: 0.6, // kernel width on age (0 = newest game on the chart, 1 = oldest)
   sigGrowth: 0.6, // kernel width on ln(player-count growth) over the same span
   sigLead: 1.0, // kernel width on ln(hours ahead)
@@ -32,6 +32,8 @@ const DEFAULTS = {
   momHi: 36, // ... and at most this many
   newMom: 1.5, // momentum given to a game that was not on the earlier chart
   newGrowth: 0.5, // growth given to a game with no earlier player count
+  stayMix: 0.4, // share of each place blended toward "the chart stays put" (the game now at #k, and its neighbours)
+  stayDecay: 24, // hours over which that stay share fades as the window moves away from the last read
 };
 
 function loadHistory(dir) {
@@ -169,9 +171,18 @@ function forecast(reads, fromIdx, windowFrom, slots, s, lessonsPack) {
     rows = rows.slice(0, 100);
     const sum = rows.reduce((t, x) => t + x.p, 0);
     const target = 1 - newShare[k - 1];
+    // Blend toward persistence: early hours of the window sit close to the last read, so the game now at #k
+    // (and, less, its neighbours) keeps an extra share that fades with the hours ahead.
+    const fade = leads.reduce((t, L) => t + Math.exp(-L / s.stayDecay), 0) / leads.length;
+    const mix = s.stayMix * fade;
+    const stay = new Map();
+    const atK = games[k - 1], up = games[k - 2], down = games[k];
+    if (atK !== undefined) stay.set(atK, 0.6);
+    if (up !== undefined) stay.set(up, 0.2);
+    if (down !== undefined) stay.set(down, 0.2);
     const m = new Map();
     for (const x of rows) {
-      const p = Math.round((x.p / sum) * target * 1e9) / 1e9;
+      const p = Math.round(((1 - mix) * (x.p / sum) + mix * (stay.get(x.u) ?? 0)) * target * 1e9) / 1e9;
       if (p <= 0) continue;
       m.set(x.u, p);
     }
@@ -259,6 +270,8 @@ function main() {
       sigGrowth: [0.3, 0.6, 1.0, 100],
       sigLead: [0.4, 0.6, 1.0],
       alpha: [1.5, 3, 6],
+      stayMix: [0, 0.1, 0.25, 0.4, 0.6],
+      stayDecay: [6, 12, 24, 48],
     };
     let best = { ...DEFAULTS };
     let bestScore = backtest(reads, best, false).model;
